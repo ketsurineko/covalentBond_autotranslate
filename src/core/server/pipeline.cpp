@@ -16,11 +16,18 @@ graphContainer::~graphContainer() {
 
 void graphContainer::addGraph(graph::cbComputeGraph* g) { m_graphs.push_back(g); }
 
+graph::cbComputeGraph* graphContainer::getGraph(int32_t idx) {
+  if (idx < 0 || idx > m_graphs.size()) return nullptr;
+  return m_graphs[idx];
+}
+
 void graphContainer::execMain() {
   if (!m_isTerminated) {
     WFGraphTask* graph = WFTaskFactory::create_graph_task([=](WFGraphTask* task) {
       fmt::print(fg(fmt::color::steel_blue) | fmt::emphasis::italic,
                  "Graph task complete. Wakeup main process\n");
+      fmt::print(fg(fmt::color::steel_blue) | fmt::emphasis::italic,
+                 "**************************************************\n");
     });
     WFTimerTask* timer = WFTaskFactory::create_timer_task(m_loopTime, 0, [=](WFTimerTask* task) {
       fmt::print("Loops Graphs by {} sec.\n", m_loopTime);
@@ -35,6 +42,8 @@ void graphContainer::execMain() {
     for (auto& item : m_graphs) {
       (graph->create_graph_node(item->generateGraphTask()))-- > (*timerNode);
     }
+    fmt::print(fg(fmt::color::steel_blue) | fmt::emphasis::italic,
+               "**************************************************\n");
     graph->start();
   } else {
     fmt::print(fg(fmt::color::steel_blue) | fmt::emphasis::italic,
@@ -45,7 +54,12 @@ void graphContainer::execMain() {
 void graphContainer::setTerminated(bool enable) { m_isTerminated = enable; }
 
 app::app(const appCfg& cfg)
-    : m_graphs(cfg.graphExecSec), m_web(cfg.webPort, cfg.webRoot), m_rHttp(cfg.rHttpPort) {}
+    : m_graphs(cfg.graphExecSec), m_web(cfg.webPort, cfg.webRoot), m_rHttp(cfg.rHttpPort) {
+  // connect Redis
+  this->m_VDM.addRedisDevice(new trivial::cbRedisDevice(
+      trivial::cbVirtualDeviceManager::m_numsRedis++, cfg.redisPort, cfg.redisHost, "",
+      cfg.redisPassword, cfg.redisDBNum, cfg.redisSSL));
+}
 
 void app::initRHttp() {
   /**
@@ -87,17 +101,29 @@ void app::initRHttp() {
       return;
     }
     Json& kv = req->json();
+
+    // get the device type.
     std::string deviceType = kv["deviceType"].get<std::string>();
-    std::string host = kv["host"].get<std::string>();
-    std::string port = kv["port"].get<std::string>();
-    std::string usrName = kv["usrName"].get<std::string>();
-    std::string password = kv["password"].get<std::string>();
-    std::string databaseName = kv["databaseName"].get<std::string>();
-    int32_t curIdx = trivial::cbVirtualDeviceManager::m_numsMySql;
-    this->m_VDM.addMySqlDevice(new trivial::cbMySqlDevice(
-        trivial::cbVirtualDeviceManager::m_numsMySql, port, host, usrName, password, databaseName));
-    resp->set_header_pair("Content-Type", "application/json");
-    resp->append_output_body(fmt::format("{}\"res\": \"{}\" {}", "{", curIdx, "}"));
+
+    if (deviceType == "MySQL") {
+      std::string host = kv["host"].get<std::string>();
+      std::string port = kv["port"].get<std::string>();
+      std::string usrName = kv["usrName"].get<std::string>();
+      std::string password = kv["password"].get<std::string>();
+      std::string databaseName = kv["databaseName"].get<std::string>();
+      int32_t curIdx = trivial::cbVirtualDeviceManager::m_numsMySql;
+      this->m_VDM.addMySqlDevice(
+          new trivial::cbMySqlDevice(trivial::cbVirtualDeviceManager::m_numsMySql, port, host,
+                                     usrName, password, databaseName));
+      resp->set_header_pair("Content-Type", "application/json");
+      resp->append_output_body(fmt::format("{}\"res\": \"{}\" {}", "{", curIdx, "}"));
+    } else if (deviceType == "Redis") {
+      std::string host = kv["host"].get<std::string>();
+      std::string port = kv["port"].get<std::string>();
+      std::string usrName = kv["usrName"].get<std::string>();
+      std::string password = kv["password"].get<std::string>();
+      // TODO
+    }
   });
 }
 

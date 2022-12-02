@@ -1,5 +1,5 @@
 #include "cbComputeGraph.hpp"
-#include <workflow/WFGraphTask.h>
+#include "trivial/cbVirtualDevice.hpp"
 
 namespace cb {
 namespace graph {
@@ -12,6 +12,14 @@ cbGraphSharedMem::~cbGraphSharedMem() {
 void cbGraphSharedMem::push(cbVirtualSharedTable* v) { m_dataFromDevice.push_back(v); }
 
 void cbGraphSharedMem::push(cbMySQLCell* v) { m_dataPool.push_back(v); }
+
+void cbGraphSharedMem::setOutStruct(const cbShape<2>& shape, cbMySQLField** info) {
+  if (!m_outStruct) {
+    m_outStruct = new cbOutputTableStruct(shape, info);
+  } else {
+    m_outStruct->update(shape, info);
+  }
+}
 
 size_t cbGraphSharedMem::getMemUsed() {
   size_t tmp = sizeof(cbMySQLCell) * m_dataPool.size();
@@ -29,6 +37,16 @@ int32_t cbGraphSharedMem::getCellNum() {
     tmp += __shape[0] * __shape[1];
   }
   return tmp;
+}
+
+cbOutputTableStruct* cbGraphSharedMem::getOutStruct() { return m_outStruct; }
+
+void cbGraphSharedMem::clear() {
+  for (auto item : m_dataFromDevice) { delete item; }
+  for (auto item : m_dataPool) { delete item; }
+  m_dataFromDevice.clear();
+  m_dataPool.clear();
+  m_outStruct->clear();
 }
 
 void cbGraphSharedLuaStack::execScriptFile(const std::string& filePath) {
@@ -83,6 +101,7 @@ void* cbVirtualDeviceNode::generateTask() {
     // Store the virtual table to the io.O port. And pass to the next Node's inputs port.
     mapShared2Virtual(__data, &io.O);
     if (nextNode) { nextNode->io.I.push_back(io.O); }
+    if (isFinalOutput) { graph->m_sharedMem->setOutStruct(io.O.getShape(), io.O.getInfo()); }
     return;
   });
 }
@@ -92,6 +111,23 @@ void cbVirtualDeviceNode::addQuery(const std::string& q) { m_queries.push_back(q
 void cbVirtualDeviceNode::setMySQLDevice(trivial::cbMySqlDevice* device) { m_device = device; }
 
 cbVirtualDeviceNode::cbVirtualDeviceNode() : cbNode(nodeType::Leaf) {}
+
+cbRedisCachingNode::cbRedisCachingNode(int32_t idx) : cbNode(nodeType::Output), m_idx(idx) {}
+
+cbRedisCachingNode::~cbRedisCachingNode() {}
+
+void* cbRedisCachingNode::generateTask() {
+  // TODO series set.
+  return nullptr;
+}
+
+WFRedisTask* cbRedisCachingNode::_generateSetTask(const std::vector<std::string>& params,
+                                                  const redis_callback& callback_func,
+                                                  void* usrData, int32_t retryTimes) {
+  return m_device->set(params, callback_func, usrData, retryTimes);
+}
+
+void cbRedisCachingNode::setRedisDevice(trivial::cbRedisDevice* device) { m_device = device; }
 
 cbOperatorNode::~cbOperatorNode() { delete Op; }
 
@@ -106,11 +142,13 @@ void* cbOperatorNode::generateTask() {
   goTask->set_callback([=](WFGoTask* task) {
     if (task->get_state() == WFT_STATE_SUCCESS) {
       io.O = Op->io.O;
+      if (isFinalOutput) { graph->m_sharedMem->setOutStruct(io.O.getShape(), io.O.getInfo()); }
       if (nextNode) { nextNode->io.I.push_back(io.O); }
     } else {
       fmt::print(fg(fmt::color::red), "Go Task exec failed.");
       return;
     }
+    Op->io.I.clear();
   });
 
   return (void*)goTask;
@@ -173,7 +211,9 @@ cbComputeGraph::cbComputeGraph(int32_t idx)
 
       "getCol", &cbVirtualTable::getCol,
 
-      "getRow", &cbVirtualTable::getRow
+      "getRow", &cbVirtualTable::getRow,
+
+      "print", &cbVirtualTable::str
 
   );
 
@@ -207,7 +247,11 @@ cbComputeGraph::cbComputeGraph(int32_t idx)
 
       "createVirtualDeviceNode", &cbComputeGraph::createVirtualDeviceNode,
 
-      "createCombineNode", &cbComputeGraph::createCombineNode
+      "createCombineNode", &cbComputeGraph::createCombineNode,
+
+      "createRedisCachingNode", &cbComputeGraph::createRedisCachingNode,
+
+      "addCacheServer", &cbComputeGraph::addCacheServer
 
   );
 
@@ -225,6 +269,24 @@ cbComputeGraph::cbComputeGraph(int32_t idx)
 
   );
 
+  // bind base Op
+  covalentBound.new_usertype<baseOp>(
+
+      "cbBaseOp",
+
+      "io", &baseOp::io
+
+  );
+
+  // bind CombineOp
+  covalentBound.new_usertype<cbOpCombine>(
+
+      "cbOpCombine",
+
+      "overrideFunc", &cbOpCombine::overload
+
+  );
+
   // bind cbVirtualDeviceNode
   covalentBound.new_usertype<cbVirtualDeviceNode>(
 
@@ -238,6 +300,9 @@ cbComputeGraph::cbComputeGraph(int32_t idx)
 
   );
 
+  // bind caching node
+  covalentBound.new_usertype<cbRedisCachingNode>("RedisCachingNode");
+
   // bind operation node
   covalentBound.new_usertype<cbOperatorNode>(
 
@@ -245,7 +310,9 @@ cbComputeGraph::cbComputeGraph(int32_t idx)
 
       "PointTo", &cbOperatorNode::PointTo,
 
-      "io", &cbOperatorNode::io
+      "io", &cbOperatorNode::io,
+
+      "Op", &cbOperatorNode::Op
 
   );
 }
@@ -273,7 +340,10 @@ bool cbComputeGraph::isDAG() {
 bool cbComputeGraph::isSingleOutput() {
   int __singleOutCnt = 0;
   for (auto& item : m_nodes) {
-    if (item->nextNode == nullptr) { __singleOutCnt++; }
+    if (item->nextNode == nullptr) {
+      __singleOutCnt++;
+      item->isFinalOutput = true;
+    }
   }
   return __singleOutCnt == 1 ? true : false;
 }
@@ -327,8 +397,17 @@ cbVirtualDeviceNode* cbComputeGraph::createVirtualDeviceNode(int32_t idx) {
   return ans;
 }
 
+cbRedisCachingNode* cbComputeGraph::createRedisCachingNode(int32_t idx) {
+  cbRedisCachingNode* ans = new cbRedisCachingNode(idx);
+  ans->setRedisDevice(m_virtualDevice->getRedisDevice(idx));
+  return ans;
+}
+
 cbOperatorNode* cbComputeGraph::createCombineNode(const std::vector<std::string>& keys) {
   cbOpCombine* ansOp = new cbOpCombine(keys);
+
+  ansOp->overload(this->m_sharedLuaStack->get()()["Cb"]["Op"]["CombineOp"]);
+
   cbOperatorNode* ans = new cbOperatorNode(ansOp);
   this->registerNode(ans);
   return ans;
@@ -349,12 +428,20 @@ WFGraphTask* cbComputeGraph::generateGraphTask(const graph_callback& func) {
   WFGraphTask* graph = WFTaskFactory::create_graph_task([=](WFGraphTask* task) {
     fmt::print(fg(fmt::color::steel_blue) | fmt::emphasis::italic,
                "Graph task {} complete. Wakeup main process\n", m_idx);
+    fmt::print(fg(fmt::color::steel_blue) | fmt::emphasis::italic,
+               "--------------------------------------------------\n");
+    m_sharedMem->clear();
+    for (auto& item : m_nodes) { item->io.I.clear(); }
   });
   if (!(isDAG() && isSingleOutput())) {
-    fmt::print(fg(fmt::color::red), "The graph {} is not DAG or has multi output\n", m_idx);
+    fmt::print(fg(fmt::color::red), "The graph {} is not DAG or has multi outputs\n", m_idx);
     return nullptr;
   }
   std::map<cbNode*, WFGraphNode*> __cb2WF;
+
+  WFGraphNode* __tail = nullptr;
+  cbNode* __tailNode = nullptr;
+
   for (auto item : m_nodes) {
     switch (item->nodeT) {
       case nodeType::Leaf:
@@ -367,13 +454,54 @@ WFGraphTask* cbComputeGraph::generateGraphTask(const graph_callback& func) {
     }
   }
   for (auto item : m_nodes) {
-    if (item->nextNode != nullptr) { (*__cb2WF[item])-- > (*__cb2WF[item->nextNode]); }
+    if (item->nextNode != nullptr) [[likely]] {
+      (*__cb2WF[item])-- > (*__cb2WF[item->nextNode]);
+    } else {
+      __tail = __cb2WF[item];
+      __tailNode = item;
+    }
+  }
+  // If the caching set is not nullptr. Caching all table to l3 redis server.
+  if (m_cacheNode) {
+    int32_t row = m_sharedMem->getOutStruct()->m_shape[0];
+    int32_t col = m_sharedMem->getOutStruct()->m_shape[1];
+    auto gos = m_sharedMem->getOutStruct();
+    for (int32_t i = 0; i < row; ++i) {
+      for (int32_t j = 0; j < col; ++j) {
+        // To String and get packed to key and value.
+        std::vector<std::string> kv;
+        kv.push_back(gos->genKey4Redis(i, j));
+        auto cell = __tailNode->io.O.atPtr(i, j);
+        if (cell->isDate() || cell->isDatetime() || cell->isString()) {
+          kv.push_back(cell->asString());
+        } else if (cell->isInt()) {
+          kv.push_back(std::to_string(cell->asInt()));
+        } else if (cell->isFloat()) {
+          kv.push_back(std::to_string(cell->asFloat()));
+        } else if (cell->isULL()) {
+          kv.push_back(std::to_string(cell->asULL()));
+        } else if (cell->asDouble()) {
+          kv.push_back(std::to_string(cell->asDouble()));
+        }
+
+        // Generate redis tasks.
+        auto redisSetTask = m_cacheNode->_generateSetTask(
+            kv, [](WFRedisTask* task) {}, nullptr, 3);
+
+        // And push to compute graph.
+        WFGraphNode* redisSetTaskToNode = &graph->create_graph_node(redisSetTask);
+        (*__tail)-- > (*redisSetTaskToNode);
+        __tail = redisSetTaskToNode;
+      }
+    }
   }
   return graph;
 }
 
 void cbComputeGraph::execMain(WFGraphTask* task, cbComputeGraph* graph) {
   if (task != nullptr && graph != nullptr) {
+    fmt::print(fg(fmt::color::steel_blue) | fmt::emphasis::italic,
+               "--------------------------------------------------\n");
     task->start();
   } else {
     fmt::print(fg(fmt::color::red), "The pointer to task or graph is nullptr\n");
@@ -385,6 +513,11 @@ void cbComputeGraph::execScriptFile(const std::string& filePath) {
 }
 
 void cbComputeGraph::execScript(const std::string& script) { m_sharedLuaStack->execScript(script); }
+
+void cbComputeGraph::addCacheServer(cbRedisCachingNode* v) {
+  m_cacheNode = v;
+  v->graph = this;
+}
 
 };  // namespace graph
 }  // namespace cb

@@ -140,11 +140,18 @@ struct cbShape {
     this->m_stride = rhs.m_stride;
   }
   cbShape(const std::initializer_list<int32_t>& rhs) : m_dims(rhs) {}
+  //   cbShape<Dims> operator=(const cbShape<Dims>& s) {
+  //     cbShape<Dims> ans;
+  // #pragma unroll
+  //     for (int32_t i = 0; i < Dims; ++i) { ans.m_dims[i] = s.m_dims[i]; }
+  //     ans.m_stride = s.m_stride;
+  //     return ans;
+  //   }
 
   inline int32_t& operator[](int32_t idx) { return m_dims[idx]; }
   inline int32_t const operator[](int32_t idx) const { return m_dims[idx]; }
 
-  int32_t numElements() {
+  inline int32_t numElements() {
     int32_t ans = 1;
 #pragma unroll
     for (int32_t i = 0; i < Dims; ++i) { ans *= m_dims[i]; }
@@ -409,6 +416,8 @@ class cbMySQLField {
    */
   cbMySQLField(const protocol::MySQLField* wfPtr);
 
+  cbMySQLField(const cbMySQLField* ptr);
+
   // get data.
   std::string getName() const;
   std::string getOrgName() const;
@@ -610,13 +619,13 @@ class cbVirtualTable {
     m_data.shrink_to_fit();
   }
 
-  cbVirtualTable operator=(const cbVirtualTable& rhsOp) {
-    cbVirtualTable ans;
-    ans.m_data = rhsOp.m_data;
-    ans.m_info = rhsOp.m_info;
-    ans.m_shape = rhsOp.m_shape;
-    return ans;
-  }
+  // cbVirtualTable operator=(const cbVirtualTable& rhsOp) {
+  //   cbVirtualTable ans;
+  //   ans.m_data = rhsOp.m_data;
+  //   ans.m_info = rhsOp.m_info;
+  //   ans.m_shape = rhsOp.m_shape;
+  //   return ans;
+  // }
 
   /**
    * @brief
@@ -712,10 +721,30 @@ class cbVirtualTable {
    */
   std::string colTypeAt(int32_t i);
 
+  /**
+   * @brief
+   *
+   */
+  void str();
+
  private:
   cbMySQLField** m_info = nullptr;
   cbShape<2> m_shape;
   std::vector<std::vector<cbMySQLCell*>> m_data;
+};
+
+struct cbOutputTableStruct {
+  cbOutputTableStruct() = delete;
+  cbOutputTableStruct(const cbShape<2>& shape, cbMySQLField** info);
+
+  void clear();
+
+  void update(const cbShape<2>& shape, cbMySQLField** info);
+
+  std::string genKey4Redis(int32_t row, int32_t col);
+
+  cbShape<2> m_shape;
+  std::vector<cbMySQLField> m_info;
 };
 
 void mapShared2Virtual(cbVirtualSharedTable* sharedT, cbVirtualTable* virtualT);

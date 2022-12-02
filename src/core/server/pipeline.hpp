@@ -42,6 +42,7 @@ class graphContainer {
   graphContainer operator=(const graphContainer&) = delete;
 
   void addGraph(graph::cbComputeGraph* g);
+  graph::cbComputeGraph* getGraph(int32_t idx);
   void execMain();
   void setTerminated(bool enable);
 
@@ -56,6 +57,11 @@ struct appCfg {
   const char* webRoot;
   unsigned short rHttpPort;
   int32_t graphExecSec;
+  const char* redisHost;
+  const char* redisPassword;
+  const char* redisPort;
+  int32_t redisDBNum = 1;
+  bool redisSSL = false;
 };
 
 class app {
