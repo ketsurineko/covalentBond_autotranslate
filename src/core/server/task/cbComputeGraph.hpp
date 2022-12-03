@@ -57,6 +57,7 @@ struct cbGraphSharedMem {
 
   void push(cbVirtualSharedTable* v);
   void push(cbMySQLCell* v);
+  void push(cbMySQLField* v);
   void setOutStruct(const cbShape<2>& shape, cbMySQLField** info);
 
   size_t getMemUsed();
@@ -69,6 +70,7 @@ struct cbGraphSharedMem {
   cbOutputTableStruct* m_outStruct = nullptr;
   std::vector<cbVirtualSharedTable*> m_dataFromDevice;
   std::vector<cbMySQLCell*> m_dataPool;
+  std::vector<cbMySQLField*> m_fields;
 };
 
 /**
@@ -385,8 +387,16 @@ class cbComputeGraph {
    */
   void addCacheServer(cbRedisCachingNode* v);
 
+  /**
+   * @brief Get the Output object
+   *
+   * @return cbOutputTableStruct*
+   */
+  cbOutputTableStruct* getOutput();
+
  private:
   int32_t m_idx = 0;
+  cbOpIO io;
   std::vector<cbNode*> m_nodes;
   cbRedisCachingNode* m_cacheNode = nullptr;
   cbGraphSharedMem* m_sharedMem = nullptr;

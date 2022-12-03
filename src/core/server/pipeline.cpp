@@ -17,8 +17,10 @@ graphContainer::~graphContainer() {
 void graphContainer::addGraph(graph::cbComputeGraph* g) { m_graphs.push_back(g); }
 
 graph::cbComputeGraph* graphContainer::getGraph(int32_t idx) {
-  if (idx < 0 || idx > m_graphs.size()) return nullptr;
-  return m_graphs[idx];
+  for (auto& item : m_graphs) {
+    if (item->getId() == idx) { return item; }
+  }
+  return nullptr;
 }
 
 void graphContainer::execMain() {
@@ -56,9 +58,11 @@ void graphContainer::setTerminated(bool enable) { m_isTerminated = enable; }
 app::app(const appCfg& cfg)
     : m_graphs(cfg.graphExecSec), m_web(cfg.webPort, cfg.webRoot), m_rHttp(cfg.rHttpPort) {
   // connect Redis
-  this->m_VDM.addRedisDevice(new trivial::cbRedisDevice(
-      trivial::cbVirtualDeviceManager::m_numsRedis++, cfg.redisPort, cfg.redisHost, "",
-      cfg.redisPassword, cfg.redisDBNum, cfg.redisSSL));
+  int32_t redisCache = trivial::cbVirtualDeviceManager::m_numsRedis;
+  this->m_VDM.addRedisDevice(new trivial::cbRedisDevice(redisCache, cfg.redisPort, cfg.redisHost,
+                                                        "", cfg.redisPassword, cfg.redisDBNum,
+                                                        cfg.redisSSL));
+  trivial::cbVirtualDeviceManager::m_numsRedis++;
 }
 
 void app::initRHttp() {
@@ -124,6 +128,29 @@ void app::initRHttp() {
       std::string password = kv["password"].get<std::string>();
       // TODO
     }
+  });
+
+  m_rHttp().GET("/table_at_graph", [=](const HttpReq* req, HttpResp* resp) {
+    if (!req->has_query("idx")) {
+      resp->set_status(500);
+      return;
+    }
+    int32_t _graphId = atoi(req->query("idx").c_str());
+    if (m_graphs.getGraph(_graphId) == nullptr) { return; }
+    auto outs = m_graphs.getGraph(_graphId)
+                    ->getOutput();  //! first: the output structure. second: true data
+    Json kv;
+    kv["row"] = outs->m_shape[0];
+    kv["col"] = outs->m_shape[1];
+    if (outs->m_info.size() == 0) {
+      kv["tableName"] = "DefaultName";
+    } else {
+      kv["tableName"] = outs->m_info[0].getTable();
+    }
+    std::vector<std::string> _tmpColName;
+    for (auto& item : outs->m_info) { _tmpColName.push_back(item.getName()); }
+    kv["colName"] = _tmpColName;
+    resp->Json(kv);
   });
 }
 
